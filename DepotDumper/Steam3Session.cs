@@ -37,7 +37,7 @@ namespace DepotDumper
         public SteamClient steamClient;
         public SteamUser steamUser;
         public SteamContent steamContent;
-        readonly SteamApps steamApps;
+        public SteamApps steamApps;
         readonly SteamCloud steamCloud;
         readonly PublishedFile steamPublishedFile;
 
@@ -55,7 +55,7 @@ namespace DepotDumper
         readonly CancellationTokenSource abortedToken = new();
 
         // input
-        readonly SteamUser.LogOnDetails logonDetails;
+        internal readonly SteamUser.LogOnDetails logonDetails;
 
         public Steam3Session(SteamUser.LogOnDetails details)
         {
@@ -65,6 +65,9 @@ namespace DepotDumper
             var clientConfiguration = SteamConfiguration.Create(config =>
                 config
                     .WithHttpClientFactory(HttpClientFactory.CreateHttpClient)
+#if DEBUG
+                    .WithWebAPIBaseAddress(new Uri("https://api.steamchina.com/"))
+#endif
             );
 
             this.steamClient = new SteamClient(clientConfiguration);

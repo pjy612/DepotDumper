@@ -19,17 +19,24 @@ namespace DepotDumper
     {
         static async Task<int> Main(string[] args)
         {
+            string username = null;
+            string password = null;
             if (args.Length == 0)
             {
                 PrintVersion();
-                PrintUsage();
-
-                if (OperatingSystem.IsWindowsVersionAtLeast(5, 0))
+                Console.Write("SteamUser:");
+                username = Console.ReadLine();
+                Console.Write("SteamPass:");
+                password = Console.ReadLine();
+                if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
                 {
-                    PlatformUtilities.VerifyConsoleLaunch();
+                    PrintUsage();
+                    if (OperatingSystem.IsWindowsVersionAtLeast(5, 0))
+                    {
+                        PlatformUtilities.VerifyConsoleLaunch();
+                    }
+                    return 0;
                 }
-
-                return 0;
             }
 
             Ansi.Init();
@@ -60,8 +67,8 @@ namespace DepotDumper
                 var httpEventListener = new HttpDiagnosticEventListener();
             }
 
-            var username = GetParameter<string>(args, "-username") ?? GetParameter<string>(args, "-user");
-            var password = GetParameter<string>(args, "-password") ?? GetParameter<string>(args, "-pass");
+            username = username ?? (GetParameter<string>(args, "-username") ?? GetParameter<string>(args, "-user"));
+            password = password ?? (GetParameter<string>(args, "-password") ?? GetParameter<string>(args, "-pass"));
 
             DepotDumper.Config.RememberPassword = HasParameter(args, "-remember-password");
             DepotDumper.Config.UseQrCode = HasParameter(args, "-qr");
@@ -99,8 +106,7 @@ namespace DepotDumper
             {
                 try
                 {
-                    bool select = HasParameter(args, "-select");
-                    await DepotDumper.DumpAppAsync(select).ConfigureAwait(false);
+                    await DepotDumper.DumpAppAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex) when (
                    ex is DepotDumperException
@@ -124,7 +130,7 @@ namespace DepotDumper
                 Console.WriteLine("Error: InitializeSteam failed");
                 return 1;
             }
-            
+
             return 0;
         }
 

@@ -252,7 +252,7 @@ namespace DepotDumper
             steam3.Disconnect();
         }
 
-        public static async Task DumpAppAsync(bool select)
+        public static async Task DumpAppAsync()
         {
             // Load our configuration data containing the depots currently Dumped
             var dumpPath = Config.DumpDirectory;
@@ -270,7 +270,16 @@ namespace DepotDumper
             IEnumerable<uint> licenseQuery;
             licenseQuery = steam3.Licenses.Select(x => x.PackageID).Distinct();
             await steam3.RequestPackageInfo(licenseQuery);
+            HashSet<uint> freeIds = [];
+            if (steam3.PackageInfo.TryGetValue(0, out var freepackage))
+            {
+                freeIds.UnionWith(freepackage.KeyValues["appids"].Children.Select(x => x.AsUnsignedInteger()));
+                freeIds.UnionWith(freepackage.KeyValues["depotids"].Children.Select(x => x.AsUnsignedInteger()));
+            }
 
+            SortedSet<uint> accountApps = [];
+            SortedSet<uint> accountDepots = [];
+            SortedSet<uint> accountAccess = [];
             foreach (var license in licenseQuery)
             {
                 if (license == 0)
@@ -281,85 +290,54 @@ namespace DepotDumper
                 SteamApps.PICSProductInfoCallback.PICSProductInfo package;
                 if (steam3.PackageInfo.TryGetValue(license, out package) && package != null)
                 {
-                    foreach (uint appId in package.KeyValues["appids"].Children.Select(x => x.AsUnsignedInteger()))
-                    {
-                        try
-                        {
-                            Directory.CreateDirectory(Path.Combine(dumpPath, appId.ToString()));
-                            await steam3?.RequestAppInfo(appId);
-
-                            var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
-                            var common = GetSteam3AppSection(appId, EAppInfoSection.Common);
-
-                            if (depots == null)
-                            {
-                                continue;
-                            }
-
-                            var appName = GetAppName(appId);
-                            if (string.IsNullOrEmpty(appName))
-                            {
-                                appName = "** UNKNOWN **";
-                            }
-
-                            Console.WriteLine("Dumping app {0}: {1}", appId, appName);
-
-                            File.WriteAllText(Path.Combine(dumpPath, appId.ToString(), $"{appId.ToString()}.info"),
-                                $"{appId};{appName}");
-
-                            foreach (var depotSection in depots.Children)
-                            {
-                                uint id = uint.MaxValue;
-
-                                if (!uint.TryParse(depotSection.Name, out id) || id == uint.MaxValue)
-                                    continue;
-
-                                if (depotSection.Children.Count == 0)
-                                    continue;
-
-                                if (!await AccountHasAccess(appId, id))
-                                    continue;
-
-                                if (select)
-                                {
-                                    Console.WriteLine(
-                                        $"Dump depot {depotSection.Name}? (Press N to skip/any other key to continue)");
-                                    if (Console.ReadKey().Key.ToString() == "N")
-                                    {
-                                        Console.WriteLine("\n");
-                                        continue;
-                                    }
-                                }
-
-                                await DumpDepot(id, appId, dumpPath);
-                            }
-                        }
-                        catch (Exception e)
-                        {
-                            Console.WriteLine("Error: {0}", e.Message);
-                        }
-                    }
+                    accountApps.UnionWith(package.KeyValues["appids"].Children.Select(x => x.AsUnsignedInteger()).Where(r => !freeIds.Contains(r)));
+                    accountDepots.UnionWith(package.KeyValues["depotids"].Children.Select(x => x.AsUnsignedInteger()).Where(r => !freeIds.Contains(r)));
                 }
             }
-
-
-            /*
-            if (!await AccountHasAccess(appId))
+            var appTokens = await steam3.steamApps.PICSGetAccessTokens(accountApps.ToArray(), []);
+            var appReq = appTokens.AppTokens.Select(r => new SteamApps.PICSRequest(r.Key, r.Value)).ToArray();
+            Console.WriteLine($"Request AppInfo {appReq.Length}...");
+            var appInfoMultiple = await steam3.steamApps.PICSGetProductInfo(appReq, []);
+            SortedDictionary<uint, (string, ulong)> AppTokens = [];
+            SortedDictionary<uint, string> DepotKeys = [];
+            foreach (var appInfo in appInfoMultiple.Results)
             {
-                if (await steam3.RequestFreeAppLicense(appId))
+                var count = appInfo.Apps.Count;
+                foreach ((int i, var app_value) in appInfo.Apps.Index())
                 {
-                    Console.WriteLine("Obtained FreeOnDemand license for app {0}", appId);
-
-                    // Fetch app info again in case we didn't get it fully without a license.
-                    await steam3.RequestAppInfo(appId, true);
-                }
-                else
-                {
-                    var contentName = GetAppName(appId);
-                    throw new DepotDumperException(string.Format("App {0} ({1}) is not available from this account.", appId, contentName));
+                    var app = app_value.Value;
+                    //Console.WriteLine($"[{i + 1}/{count}]Got AppInfo for {app.ID}");
+                    steam3.AppInfo[app.ID] = app;
+                    AppTokens[app.ID] = (GetAppName(app.ID), appTokens.AppTokens.GetValueOrDefault(app.ID, 0UL));
                 }
             }
-            */
+            File.WriteAllLines(Path.Combine(dumpPath, $"{steam3.logonDetails.Username}.appkeys"), AppTokens.Select(r => $"{r.Key};{r.Value.Item1};{r.Value.Item2}"));
+            Console.WriteLine("Dump appkeys done.");
+            accountAccess.UnionWith(accountApps);
+            accountAccess.UnionWith(accountDepots);
+            foreach (var (appId, info) in steam3.AppInfo)
+            {
+                if (freeIds.Contains(appId)) continue;
+                await steam3.RequestDepotKey(appId, appId);
+                var depots = GetSteam3AppSection(appId, EAppInfoSection.Depots);
+                if (depots == null || depots == KeyValue.Invalid) continue;
+                foreach (var depotSection in depots.Children)
+                {
+                    uint depotId = uint.MaxValue;
+
+                    if (!uint.TryParse(depotSection.Name, out depotId) || depotId == uint.MaxValue)
+                        continue;
+
+                    if (depotSection.Children.Count == 0)
+                        continue;
+
+                    if (!accountAccess.Contains(depotId))
+                        continue;
+                    await steam3.RequestDepotKey(depotId, appId);
+                }
+            }
+            File.WriteAllLines(Path.Combine(dumpPath, $"{steam3.logonDetails.Username}.depotkeys"), new SortedDictionary<uint, byte[]>(steam3.DepotKeys).Select(r => $"{r.Key};{Convert.ToHexStringLower(r.Value)}"));
+            Console.WriteLine("Dump depotkeys done.");
         }
 
         static async Task DumpDepot(uint depotId, uint appId, string path)
